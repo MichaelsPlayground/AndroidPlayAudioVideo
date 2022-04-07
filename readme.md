@@ -48,6 +48,11 @@ https://learntutorials.net/de/android/topic/1851/media-player
 
 progressbar !!
 https://www.dev2qa.com/android-play-local-url-audio-with-progressbar-example/
+
+seekbar:
+https://github.com/journaldev/journaldev/tree/master/Android/AndroidMediaPlayerSong
+
+
 ```
 
 

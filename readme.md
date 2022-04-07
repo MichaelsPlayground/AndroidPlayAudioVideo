@@ -46,7 +46,8 @@ file_paths.xml:
 ```plaintext
 https://learntutorials.net/de/android/topic/1851/media-player
 
-
+progressbar !!
+https://www.dev2qa.com/android-play-local-url-audio-with-progressbar-example/
 ```
 
 

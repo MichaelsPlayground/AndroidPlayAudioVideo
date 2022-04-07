@@ -9,27 +9,34 @@ import androidx.core.content.ContextCompat;
 import androidx.loader.content.CursorLoader;
 
 import android.Manifest;
+import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.ContentResolver;
 import android.content.ContentUris;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.media.AudioAttributes;
 import android.media.MediaPlayer;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Message;
 import android.provider.MediaStore;
 import android.util.Log;
 import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.ProgressBar;
 import android.widget.TextView;
 
 import java.io.IOException;
 import java.security.Permission;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -49,8 +56,27 @@ public class MainActivity extends AppCompatActivity {
     Context context;
 
     // Instantiating the MediaPlayer class
-    static MediaPlayer mediaPlayer;
+    static MediaPlayer mediaPlayer = null;
+    // Show played audio progress.
+    private ProgressBar playAudioProgress;
+    // Used when update audio progress thread send message to progress bar handler.
+    private static final int UPDATE_AUDIO_PROGRESS_BAR = 3;
+    // Wait update audio progress thread sent message, then update audio play progress.
+    private Handler audioProgressHandler = null;
+    // The thread that send message to audio progress handler to update progress every one second.
+    private Thread updateAudioPalyerProgressThread = null;
+    // Record whether audio is playing or not.
+    private boolean audioIsPlaying = false;
 
+    // new for check and grant permissions within the app
+    private boolean isReadPermissionGranted = false;
+    private boolean isWritePermissionGranted = false;
+    //private boolean isCameraPermissionGranted = false;
+    private boolean isInternetPermissionGranted = false;
+    //private boolean isRecordAudioPermissionGranted = false;
+    ActivityResultLauncher<String[]> myPermissionResultLauncher;
+
+    @SuppressLint("HandlerLeak")
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -76,6 +102,34 @@ public class MainActivity extends AppCompatActivity {
 
         tvG07 = findViewById(R.id.tvG07);
         etG07 = findViewById(R.id.etG07E01);
+
+        playAudioProgress = (ProgressBar)findViewById(R.id.play_audio_progressbar);
+        /* Initialize audio progress handler. */
+        if(audioProgressHandler==null) {
+            audioProgressHandler = new Handler() {
+                @Override
+                public void handleMessage(Message msg) {
+                    if (msg.what == UPDATE_AUDIO_PROGRESS_BAR) {
+                        if(mediaPlayer!=null) {
+                            // Get current play time.
+                            int currPlayPosition = mediaPlayer.getCurrentPosition();
+                            // Get total play time.
+                            int totalTime = mediaPlayer.getDuration();
+                            // Calculate the percentage.
+                            //int currProgress = (currPlayPosition * 1000) / totalTime;
+                            int currProgress = (currPlayPosition * 100) / totalTime;
+                            /*
+                            System.out.println("### cuPos: " + currPlayPosition +
+                                    " toTime: " + totalTime +
+                                    " cuProgr: " + currProgress);
+                            */
+                            // Update progressbar.
+                            playAudioProgress.setProgress(currProgress);
+                        }
+                    }
+                }
+            };
+        }
 
         btn01.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -130,6 +184,9 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onClick(View v) {
                 mediaPlayer.stop();
+                updateAudioPalyerProgressThread = null;
+                playAudioProgress.setProgress(0);
+                audioIsPlaying = false;
             }
         });
 
@@ -137,6 +194,7 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onClick(View v) {
                 mediaPlayer.pause();
+                updateAudioPalyerProgressThread = null;
             }
         });
 
@@ -243,16 +301,57 @@ public class MainActivity extends AppCompatActivity {
         btn05.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                // list all audio files on device
-                // https://riptutorial.com/android/example/23916/fetch-audio-mp3-files-from-specific-folder-of-device-or-fetch-all-files
-                getAllAudioFromDevice(v.getContext());
+                System.out.println("*** list audio files ***");
+                // funktioniert
+                // siehe auch: https://stackoverflow.com/a/37496502/8166854
+
+                ArrayList audio=new ArrayList();
+                Uri uri = android.provider.MediaStore.Audio.Media.EXTERNAL_CONTENT_URI;
+                String[] projection = {MediaStore.Audio.Media.DISPLAY_NAME,
+                        MediaStore.Audio.AudioColumns.DATA,
+                        MediaStore.Audio.AudioColumns.TITLE,
+                        MediaStore.Audio.AudioColumns.ALBUM,
+                        MediaStore.Audio.ArtistColumns.ARTIST,
+                        MediaStore.Audio.AudioColumns.TRACK,
+                        MediaStore.Audio.AudioColumns.DURATION};
+                //Cursor c=getContentResolver().query(uri, new String[]{MediaStore.Audio.Media.DISPLAY_NAME}, null, null, null);
+                Cursor c=getContentResolver().query(uri, projection, null, null, null);
+                while(c.moveToNext())
+                {
+                    if (c.getColumnIndex(MediaStore.Audio.Media.DISPLAY_NAME) >= 0) {
+                        @SuppressLint("Range") String name=c.getString(c.getColumnIndex(MediaStore.Audio.Media.DISPLAY_NAME));
+                        audio.add(name);
+                        @SuppressLint("Range") String duration = c.getString(c.getColumnIndex(MediaStore.Audio.Media.DURATION));
+                        @SuppressLint("Range") String artist = c.getString(c.getColumnIndex(MediaStore.Audio.Media.ARTIST));
+                        @SuppressLint("Range") String album = c.getString(c.getColumnIndex(MediaStore.Audio.Media.ALBUM));
+                        @SuppressLint("Range") String title = c.getString(c.getColumnIndex(MediaStore.Audio.Media.TITLE));
+                        @SuppressLint("Range") String track = c.getString(c.getColumnIndex(MediaStore.Audio.Media.TRACK));
+
+                        //convert the song duration into string reading hours, mins seconds
+                        int dur = Integer.valueOf(duration);
+                        int hrs = (dur / 3600000);
+                        int mns = (dur / 60000) % 60000;
+                        int scs = dur % 60000 / 1000;
+                        String songTime = String.format("%02d:%02d:%02d", hrs,  mns, scs);
+
+                        String output = "# name: " + name +
+                                " artist: " + artist +
+                                " album: " + album +
+                                " title: " + title +
+                                " track: " + track +
+                                " duration: " + duration +
+                                " songTime: " + songTime;
+                        //"";
+                        System.out.println("# output: " + output);
+                        tvG07.setText(output);
+                    }
+                }
             }
         });
 
         btn06.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-
             }
         });
 
@@ -270,6 +369,34 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
+        myPermissionResultLauncher = registerForActivityResult(new ActivityResultContracts.RequestMultiplePermissions(), new ActivityResultCallback<Map<String, Boolean>>() {
+            @Override
+            public void onActivityResult(Map<String, Boolean> result) {
+                if (result.get(Manifest.permission.READ_EXTERNAL_STORAGE) != null) {
+                    isReadPermissionGranted = result.get(Manifest.permission.READ_EXTERNAL_STORAGE);
+                }
+                if (result.get(Manifest.permission.WRITE_EXTERNAL_STORAGE) != null) {
+                    isWritePermissionGranted = result.get(Manifest.permission.WRITE_EXTERNAL_STORAGE);
+                }
+                if (result.get(Manifest.permission.INTERNET) != null) {
+                    isInternetPermissionGranted = result.get(Manifest.permission.INTERNET);
+                }
+
+                /*
+                if (result.get(Manifest.permission.CAMERA) != null) {
+                    isCameraPermissionGranted = result.get(Manifest.permission.CAMERA);
+                }
+                */
+                /*if (result.get(Manifest.permission.RECORD_AUDIO) != null) {
+                    isRecordAudioPermissionGranted = result.get(Manifest.permission.RECORD_AUDIO);
+                }*/
+            }
+        });
+
+        // check and request read and write permissions
+        // don't place this above
+        // mPermissionResultLauncher = registerForActivityResult(new ActivityResultContracts.RequestMultiplePermissions(), new ActivityResultCallback<Map<String, Boolean>>()
+        requestPermission();
 
     }
 
@@ -316,6 +443,36 @@ public class MainActivity extends AppCompatActivity {
                             mediaPlayer.setDataSource(getApplicationContext(), uri);
                             mediaPlayer.prepare();
                             mediaPlayer.start();
+
+                            // progressbar
+                            audioIsPlaying = true;
+                            // Display progressbar.
+                            playAudioProgress.setVisibility(ProgressBar.VISIBLE);
+                            if(updateAudioPalyerProgressThread == null) {
+                                // Create the thread.
+                                updateAudioPalyerProgressThread = new Thread() {
+                                    @Override
+                                    public void run() {
+                                        try {
+                                            while (audioIsPlaying) {
+                                                if (audioProgressHandler != null) {
+                                                    // Send update audio player progress message to main thread message queue.
+                                                    Message msg = new Message();
+                                                    msg.what = UPDATE_AUDIO_PROGRESS_BAR;
+                                                    audioProgressHandler.sendMessage(msg);
+                                                    Thread.sleep(1000);
+                                                }
+                                            }
+                                        } catch (InterruptedException ex) {
+                                            Log.e("TAG_PLAY_AUDIO", ex.getMessage(), ex);
+                                        }
+                                    }
+                                };
+                                updateAudioPalyerProgressThread.start();
+                            }
+
+
+
                         } catch (IOException e) {
                             e.printStackTrace();
                         }
@@ -376,6 +533,8 @@ public class MainActivity extends AppCompatActivity {
                 e.printStackTrace();
             }
         }
+
+
     }
 
     private void contentResolverExample() {
@@ -420,7 +579,39 @@ public class MainActivity extends AppCompatActivity {
         // ...prepare and start...
     }
 
+    /*
+    // https://stackoverflow.com/q/53869942/8166854
+    public void getMusic() {
+        ContentResolver contentResolver = getContentResolver();
+        Uri songUri = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI;
+        String[] projection = {MediaStore.Audio.AudioColumns.DATA, MediaStore.Audio.AudioColumns.TITLE, MediaStore.Audio.AudioColumns.ALBUM, MediaStore.Audio.ArtistColumns.ARTIST,};
+        Cursor songCursor = contentResolver.query(songUri, projection, MediaStore.Audio.Media.DATA + " like ? ", new String[]{"%/storage/emulated/0/Download/Music/%"}, null, null);
+        Log.e("COUNT", "" + songCursor.getCount());
+
+        if (songCursor != null && songCursor.moveToFirst()) {
+            int songTitle = songCursor.getColumnIndex(MediaStore.Audio.Media.TITLE);
+            int songArtist = songCursor.getColumnIndex(MediaStore.Audio.Media.ARTIST);
+            int songPath = songCursor.getColumnIndex((MediaStore.Audio.Media.DATA));
+
+            do {
+                String currentTitle = songCursor.getString(songTitle);
+                String currentArtist = songCursor.getString(songArtist);
+                String currentPath = songCursor.getString(songPath);
+                Uri uriSong = MediaStore.Audio.Media.getContentUriForPath(currentPath);
+
+                // Testing purposes
+                Log.e("TEST", "Name: " + currentTitle + " Artist: " + currentArtist + " Path: " + currentPath + uriSong.toString());
+
+                songList.add(new Song(currentPath, "Artist", currentPath));
+            } while (songCursor.moveToNext());
+        }
+        songCursor.close();
+        Log.e("LIST", "" + songList.size());
+    }
+*/
+
     // https://riptutorial.com/android/example/23916/fetch-audio-mp3-files-from-specific-folder-of-device-or-fetch-all-files
+    // list all audio files on device
     public List<AudioModel> getAllAudioFromDevice(final Context context) {
         final List<AudioModel> tempAudioList = new ArrayList<>();
         System.out.println("*** getAllAudioFromDevice ***");
@@ -472,6 +663,55 @@ public class MainActivity extends AppCompatActivity {
         return result;
     }
 
+// new for permissions start
 
+    private void requestPermission() {
+        boolean minSDK = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q;
+        isReadPermissionGranted = ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.READ_EXTERNAL_STORAGE
+        ) == PackageManager.PERMISSION_GRANTED;
+        isWritePermissionGranted = ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.WRITE_EXTERNAL_STORAGE
+        ) == PackageManager.PERMISSION_GRANTED;
+        isWritePermissionGranted = isWritePermissionGranted || minSDK;
+        isInternetPermissionGranted = ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.INTERNET
+        ) == PackageManager.PERMISSION_GRANTED;
+
+        /*
+        isCameraPermissionGranted = ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.CAMERA
+        ) == PackageManager.PERMISSION_GRANTED;
+
+         */
+        /*isRecordAudioPermissionGranted = ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED;*/
+        List<String> permissionRequest = new ArrayList<String>();
+        if (!isReadPermissionGranted) {
+            permissionRequest.add(Manifest.permission.READ_EXTERNAL_STORAGE);
+        }
+        if (!isWritePermissionGranted) {
+            permissionRequest.add(Manifest.permission.WRITE_EXTERNAL_STORAGE);
+        }
+        if (!isInternetPermissionGranted) {
+            permissionRequest.add(Manifest.permission.INTERNET);
+        }
+        /*if (!isCameraPermissionGranted) {
+            permissionRequest.add(Manifest.permission.CAMERA);
+        }*/
+        /*if (!isRecordAudioPermissionGranted) {
+            permissionRequest.add(Manifest.permission.RECORD_AUDIO);
+        }*/
+        if (!permissionRequest.isEmpty()) {
+            myPermissionResultLauncher.launch(permissionRequest.toArray(new String[0]));
+        }
+    }
+    // new for permissions end
 
 }
